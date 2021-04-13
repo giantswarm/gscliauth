@@ -42,6 +42,8 @@ const (
 	// garbageCollectionLikelihood is a number between 0 and 1 that sets the
 	// likelihood that we will execute garbage collection functions..
 	garbageCollectionLikelihood = .2
+
+	giantswarmAuthScheme = "giantswarm"
 )
 
 var (
@@ -239,12 +241,14 @@ func (c *configStruct) StoreEndpointAuth(endpointURL, alias, provider, email, sc
 	}
 
 	err := c.setEndpoint(endpointURL, alias, provider, email, scheme, token, refreshToken)
-
 	if err != nil {
 		return microerror.Mask(err)
 	}
 
-	WriteToFile()
+	err = WriteToFile()
+	if err != nil {
+		return microerror.Mask(err)
+	}
 
 	return nil
 }
@@ -269,7 +273,7 @@ func (c *configStruct) selectEndpoint(endpointAliasOrURL string) error {
 	}
 
 	c.endpointsMutex.Lock()
-	c.endpointsMutex.Unlock()
+	defer c.endpointsMutex.Unlock()
 
 	if !argumentIsAlias {
 		ep = normalizeEndpoint(endpointAliasOrURL)
@@ -280,7 +284,7 @@ func (c *configStruct) selectEndpoint(endpointAliasOrURL string) error {
 
 	// Migrate empty scheme to 'giantswarm'.
 	if c.endpoints[ep].Scheme == "" {
-		c.endpoints[ep].Scheme = "giantswarm"
+		c.endpoints[ep].Scheme = giantswarmAuthScheme
 	}
 
 	c.SelectedEndpoint = ep
@@ -301,7 +305,10 @@ func (c *configStruct) SelectEndpoint(endpointAliasOrURL string) error {
 		return microerror.Mask(err)
 	}
 
-	WriteToFile()
+	err = WriteToFile()
+	if err != nil {
+		return microerror.Mask(err)
+	}
 
 	return nil
 }
@@ -330,7 +337,7 @@ func (c *configStruct) ChooseEndpoint(overridingEndpointAliasOrURL string) strin
 			// fields should be filled by calls to
 			// ChooseToken, ChooseScheme, SetProvider...
 			if _, ok := c.endpoints[ep]; !ok {
-				c.setEndpoint(
+				_ = c.setEndpoint(
 					ep, // endpointURL
 					"", // alias
 					"", // provider
@@ -341,7 +348,7 @@ func (c *configStruct) ChooseEndpoint(overridingEndpointAliasOrURL string) strin
 				)
 			}
 		}
-		c.selectEndpoint(ep)
+		_ = c.selectEndpoint(ep)
 	}
 
 	// finally return the SelectedEndpoint (it has been set in the lines above)
@@ -390,7 +397,10 @@ func (c *configStruct) DeleteEndpoint(endpointAliasOrURL string) error {
 		c.SelectedEndpoint = ""
 	}
 
-	WriteToFile()
+	err := WriteToFile()
+	if err != nil {
+		return microerror.Mask(err)
+	}
 
 	return nil
 }
@@ -435,10 +445,10 @@ func (c *configStruct) ChooseScheme(endpoint string, CmdToken string) string {
 			c.endpointsMutex.Lock()
 			defer c.endpointsMutex.Unlock()
 
-			c.endpoints[ep].Scheme = "giantswarm"
+			c.endpoints[ep].Scheme = giantswarmAuthScheme
 		}
 
-		return "giantswarm"
+		return giantswarmAuthScheme
 	}
 
 	endpointConfig := c.EndpointConfig(ep)
@@ -446,7 +456,7 @@ func (c *configStruct) ChooseScheme(endpoint string, CmdToken string) string {
 		return endpointConfig.Scheme
 	}
 
-	return "giantswarm"
+	return giantswarmAuthScheme
 }
 
 // HasEndpointAlias returns whether the given alias is used for an endpoint.
@@ -521,7 +531,10 @@ func (c *configStruct) SetProvider(provider string) error {
 	// command line flags to the file
 	if conf != nil {
 		if _, ok := conf.endpoints[c.SelectedEndpoint]; ok {
-			WriteToFile()
+			err := WriteToFile()
+			if err != nil {
+				return microerror.Mask(err)
+			}
 		}
 	}
 
@@ -554,7 +567,7 @@ func (c *configStruct) Logout(endpointURL string) {
 		endpointConfig.Email = ""
 	}
 
-	WriteToFile()
+	_ = WriteToFile()
 }
 
 // AuthHeaderGetter returns a function that can get the auth header for a given endpoint that the client can use.
@@ -620,11 +633,7 @@ func isTokenValid(token string) (expired bool) {
 	}
 
 	err = parsedToken.Claims.Valid()
-	if err != nil {
-		return false
-	}
-
-	return true
+	return err == nil
 }
 
 // init sets defaults and initializes config paths.
@@ -709,6 +718,7 @@ func initialize(fs afero.Fs, configDirPath string, loggerToUse io.Writer) error 
 
 	// apply garbage collection.
 	randSource := rand.NewSource(time.Now().UnixNano())
+	// #nosec G404
 	randGenerator := rand.New(randSource)
 	if randGenerator.Float32() < garbageCollectionLikelihood {
 		err := GarbageCollectKeyPairs(fs)
